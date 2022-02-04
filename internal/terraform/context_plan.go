@@ -200,10 +200,10 @@ The -target option is not for routine use, and is provided only for exceptional 
 		panic("nil plan but no errors")
 	}
 
-	relevantResources, rDiags := c.relevantResourcesForPlan(config, plan)
+	relevantAttrs, rDiags := c.relevantResourceAttrsForPlan(config, plan)
 	diags = diags.Append(rDiags)
 
-	plan.RelevantResources = relevantResources
+	plan.RelevantAttributes = relevantAttrs
 	return plan, diags
 }
 
@@ -366,10 +366,10 @@ func (c *Context) destroyPlan(config *configs.Config, prevRunState *states.State
 		destroyPlan.PrevRunState = pendingPlan.PrevRunState
 	}
 
-	relevantResources, rDiags := c.relevantResourcesForPlan(config, destroyPlan)
+	relevantAttrs, rDiags := c.relevantResourceAttrsForPlan(config, destroyPlan)
 	diags = diags.Append(rDiags)
 
-	destroyPlan.RelevantResources = relevantResources
+	destroyPlan.RelevantAttributes = relevantAttrs
 	return destroyPlan, diags
 }
 
@@ -766,22 +766,11 @@ func (c *Context) referenceAnalyzer(config *configs.Config, state *states.State)
 
 // relevantResourcesForPlan implements the heuristic we use to populate the
 // RelevantResources field of returned plans.
-func (c *Context) relevantResourcesForPlan(config *configs.Config, plan *plans.Plan) ([]addrs.AbsResource, tfdiags.Diagnostics) {
+func (c *Context) relevantResourceAttrsForPlan(config *configs.Config, plan *plans.Plan) ([]globalref.ResourceAttr, tfdiags.Diagnostics) {
 	azr, diags := c.referenceAnalyzer(config, plan.PriorState)
 	if diags.HasErrors() {
 		return nil, diags
 	}
-
-	// Our current strategy is that a resource is relevant if it either has
-	// a proposed change action directly, or if its attributes are used as
-	// any part of a resource that has a proposed change action. We don't
-	// consider individual changed attributes for now, because we can't
-	// really reason about any rules that providers might have about changes
-	// to one attribute implying a change to another.
-
-	// We'll use the string representation of a resource address as a unique
-	// key so we can dedupe our results.
-	relevant := make(map[string]addrs.AbsResource)
 
 	var refs []globalref.Reference
 	for _, change := range plan.Changes.Resources {
@@ -789,24 +778,18 @@ func (c *Context) relevantResourcesForPlan(config *configs.Config, plan *plans.P
 			continue
 		}
 		instAddr := change.Addr
-		addr := instAddr.ContainingResource()
-		relevant[addr.String()] = addr
 
 		moreRefs := azr.ReferencesFromResourceInstance(instAddr)
 		refs = append(refs, moreRefs...)
 	}
 
-	contributors := azr.ContributingResources(refs...)
-	for _, addr := range contributors {
-		relevant[addr.String()] = addr
+	var contributors []globalref.ResourceAttr
+
+	for _, ref := range azr.ContributingResourceReferences(refs...) {
+		if res, ok := ref.ResourceAttr(); ok {
+			contributors = append(contributors, res)
+		}
 	}
 
-	if len(relevant) == 0 {
-		return nil, diags
-	}
-	ret := make([]addrs.AbsResource, 0, len(relevant))
-	for _, addr := range relevant {
-		ret = append(ret, addr)
-	}
-	return ret, diags
+	return contributors, diags
 }
